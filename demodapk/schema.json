@@ -1,0 +1,391 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "$id": "https://demodapk.netlify.app/schema.json",
+  "title": "DemodAPK Config",
+  "description": "Schema for demodapk configuration JSON",
+  "type": "object",
+  "properties": {
+    "DemodAPK": {
+      "type": "object",
+      "description": "Main container for all app configurations, keyed by package name.",
+      "patternProperties": {
+        "^[a-zA-Z0-9_.]+$": {
+          "type": "object",
+          "description": "Configuration for a single app, identified by its package name.",
+          "properties": {
+            "apkeditor": {
+              "type": "object",
+              "description": "Configuration for APKEditor behavior.",
+              "properties": {
+                "javaopts": {
+                  "type": "string",
+                  "description": "Options passed to Java when running APK tool (e.g. memory settings)."
+                },
+                "jarpath": {
+                  "type": "string",
+                  "description": "Path to APKEditor.jar"
+                },
+                "output": {
+                  "type": "string",
+                  "description": "Directory path where decoded/build output is stored."
+                },
+                "dex": {
+                  "type": "boolean",
+                  "default": false,
+                  "oneOf": [
+                    {
+                      "const": true,
+                      "description": "Copy raw dex files."
+                    },
+                    {
+                      "const": false,
+                      "description": "Make baksmali files."
+                    }
+                  ],
+                  "description": "Whether to include dex folder processing."
+                },
+                "clean": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Keep only the rebuilt APK."
+                }
+              },
+              "additionalProperties": false
+            },
+            "app_name": {
+              "type": "string",
+              "description": "The name of the app."
+            },
+            "commands": {
+              "type": "object",
+              "description": "Commands to run at different stages of the build process.",
+              "properties": {
+                "quietly": {
+                  "type": "boolean",
+                  "default": false,
+                  "oneOf": [
+                    {
+                      "const": true,
+                      "description": "Every commands run quietly in background."
+                    },
+                    {
+                      "const": false,
+                      "description": "Normal output from any commands run."
+                    }
+                  ],
+                  "description": "If true, suppress output of commands."
+                },
+                "begin": {
+                  "type": "array",
+                  "description": "Commands to execute at the beginning of processing.",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "description": "A raw shell command string."
+                      },
+                      {
+                        "type": "object",
+                        "description": "Structured command definition.",
+                        "properties": {
+                          "run": {
+                            "type": "string",
+                            "description": "The command to run."
+                          },
+                          "title": {
+                            "type": "string",
+                            "description": "A descriptive label for this command."
+                          },
+                          "quiet": {
+                            "type": "boolean",
+                            "oneOf": [
+                              {
+                                "const": true,
+                                "description": "Run the command in quiet mode (no output will be shown)."
+                              },
+                              {
+                                "const": false,
+                                "description": "Run the command in normal mode (output will be displayed)."
+                              }
+                            ],
+                            "description": "Override quiet mode for this command."
+                          }
+                        },
+                        "required": [
+                          "run"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "end": {
+                  "type": "array",
+                  "description": "Commands to execute at the end of processing.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "run": {
+                        "type": "string",
+                        "description": "The command to run."
+                      },
+                      "title": {
+                        "type": "string",
+                        "description": "A descriptive label for this command."
+                      },
+                      "quiet": {
+                        "type": "boolean",
+                        "oneOf": [
+                          {
+                            "const": true,
+                            "description": "Run the command in quiet mode (no output will be shown)."
+                          },
+                          {
+                            "const": false,
+                            "description": "Run the command in normal mode (output will be displayed)."
+                          }
+                        ],
+                        "description": "Override quiet mode for this command."
+                      }
+                    },
+                    "required": [
+                      "run"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "hex": {
+              "type": "array",
+              "description": "A list of binary patching operations to apply.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Path to the binary file to patch, relative to the decoded APK directory."
+                  },
+                  "verbose": {
+                    "type": "boolean",
+                    "default": false,
+                    "oneOf": [
+                      {
+                        "const": true,
+                        "description": "Print detailed hex-patch information."
+                      },
+                      {
+                        "const": false,
+                        "description": "Show only the offsets that were patched."
+                      }
+                    ],
+                    "description": "Enable detailed logging for this patch operation."
+                  },
+                  "patch": {
+                    "type": "array",
+                    "description": "A list of search-and-replace hex patterns.",
+                    "items": {
+                      "type": "string",
+                      "description": "A single patch rule in the format 'SEARCH | REPLACE_HEX'. SEARCH can contain '??' as wildcards. or can be offset with 0x."
+                    }
+                  }
+                },
+                "required": [
+                  "path",
+                  "patch"
+                ]
+              }
+            },
+            "path": {
+              "type": "object",
+              "description": "File system operations to perform within the decoded APK directory.",
+              "properties": {
+                "cp": {
+                  "type": [
+                    "string",
+                    "array"
+                  ],
+                  "description": "Copy files or directories. Each item is a string 'source destination'.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "mv": {
+                  "type": [
+                    "string",
+                    "array"
+                  ],
+                  "description": "Move files or directories. Each item is a string 'source destination'.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rm": {
+                  "type": [
+                    "string",
+                    "array"
+                  ],
+                  "description": "Remove files or directories. Each item is a path to remove.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "add": {
+                  "type": [
+                    "string",
+                    "array"
+                  ],
+                  "description": "Add files or directories from an external source to the decoded APK directory. Each item is a string 'source_path destination_path'.",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "level": {
+              "type": "integer",
+              "default": 2,
+              "enum": [
+                0,
+                1,
+                2,
+                3,
+                4
+              ],
+              "anyOf": [
+                {
+                  "const": 0,
+                  "description": "Updates the 'package' attribute, and attributes like 'android:name' and 'android:authorities' that use the old package name."
+                },
+                {
+                  "const": 1,
+                  "description": "Level 0 changes, plus clears 'android:taskAffinity'."
+                },
+                {
+                  "const": 2,
+                  "description": "Level 0 changes, plus updates 'android:taskAffinity' to the new package name."
+                },
+                {
+                  "const": 3,
+                  "description": "Level 2 changes, plus updates 'android:host' attributes (including 'cct' variants)."
+                },
+                {
+                  "const": 4,
+                  "description": "Level 1 changes, plus updates 'android:host' attributes (including 'cct' variants)."
+                }
+              ],
+              "description": "Configuration manifest level edit or priority for the app."
+            },
+            "package": {
+              "type": "string",
+              "description": "The new package name to assign to the app."
+            },
+            "facebook": {
+              "type": "object",
+              "description": "Facebook SDK configuration values.",
+              "properties": {
+                "app_id": {
+                  "type": "string",
+                  "description": "Facebook application ID."
+                },
+                "client_token": {
+                  "type": "string",
+                  "description": "Facebook client token."
+                },
+                "login_protocol_scheme": {
+                  "type": "string",
+                  "default": "fb",
+                  "description": "Facebook login protocol scheme"
+                }
+              },
+              "additionalProperties": false
+            },
+            "manifest": {
+              "type": "object",
+              "description": "Configuration for modifying AndroidManifest.xml.",
+              "properties": {
+                "app_label": {
+                  "type": "string",
+                  "description": "The new application label to set in AndroidManifest.xml."
+                },
+                "hide_app_icon": {
+                  "type": "boolean",
+                  "default": false,
+                  "oneOf": [
+                    {
+                      "const": true,
+                      "description": "Hides the app icon from the launcher."
+                    },
+                    {
+                      "const": false,
+                      "description": "App icon remains visible in the launcher."
+                    }
+                  ],
+                  "description": "Hides the app icon from the launcher by disabling launcher activities."
+                },
+                "remove_metadata": {
+                  "type": "array",
+                  "description": "List of metadata keys to remove from the manifest.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "activity_exportall": {
+                  "type": "boolean",
+                  "default": false,
+                  "oneOf": [
+                    {
+                      "const": true,
+                      "description": "Enable"
+                    },
+                    {
+                      "const": false,
+                      "description": "Disable"
+                    }
+                  ],
+                  "description": "Makes all application activities exportable."
+                },
+                "app_debuggable": {
+                  "type": "boolean",
+                  "default": false,
+                  "oneOf": [
+                    {
+                      "const": true,
+                      "description": "Enable"
+                    },
+                    {
+                      "const": false,
+                      "description": "Disable"
+                    }
+                  ],
+                  "description": "Makes the application debuggable."
+                },
+                "version_targetsdk": {
+                  "type": "integer",
+                  "minimum": 23,
+                  "default": 34,
+                  "description": "Changes the target SDK of the app."
+                },
+                "version_code": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Changes the version code of the app. This will turn off app store updates"
+                },
+                "version_name": {
+                  "type": "string",
+                  "description": "Changes the version name of the app."
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

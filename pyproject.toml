@@ -1,0 +1,96 @@
+[project]
+name = "demodapk"
+description = "A Demo CLI for modifying APK resources via config"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+dependencies = [
+    "art",
+    "auto-click-auto",
+    "rich",
+    "rich-click",
+    "rich-gradient",
+    "inquirer",
+]
+readme = "README.md"
+dynamic = ["version"]
+authors = [
+    { name = "Veha0001", email = "84841152+Veha0001@users.noreply.github.com" },
+]
+maintainers = [
+    { name = "Veha0001", email = "84841152+Veha0001@users.noreply.github.com" },
+]
+keywords = ["arsc", "apk", "apkeditor", "demo"]
+
+[project.urls]
+Homepage = "https://github.com/Veha0001/DemodAPK"
+Documentation = "https://demodapk.netlify.app"
+Repository = "https://github.com/Veha0001/DemodAPK"
+Issues = "https://github.com/Veha0001/DemodAPK/issues"
+
+[build-system]
+requires = ["flit_core"]
+build-backend = "flit_core.buildapi"
+
+[project.scripts]
+demodapk = "demodapk.cli:main"
+
+[project.optional-dependencies]
+dev = ["mkdocs", "mkdocs-material", "mkdocs-github-admonitions-plugin"]
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
+
+# Same as Black.
+line-length = 100
+indent-width = 4
+
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = []
+
+fixable = ["ALL"]
+unfixable = []
+
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+quote-style = "double"
+
+indent-style = "space"
+
+skip-magic-trailing-comma = false
+
+line-ending = "auto"
+
+docstring-code-format = false
+
+docstring-code-line-length = "dynamic"

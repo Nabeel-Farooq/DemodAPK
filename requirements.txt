@@ -1,0 +1,9 @@
+art
+auto-click-auto
+rich
+rich-click
+rich-gradient
+inquirer
+mkdocs
+mkdocs-material
+mkdocs-github-admonitions-plugin
