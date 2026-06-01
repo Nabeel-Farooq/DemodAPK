@@ -97,9 +97,6 @@ Follow the prompts to select the APK file and modify its contents according to y
 
 </details>
 
-## License
-
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
