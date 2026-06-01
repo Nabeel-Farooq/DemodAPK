@@ -28,7 +28,7 @@ pip install demodapk
 Clone the repository and install manually:
 
 ```bash
-git clone https://github.com/Veha0001/DemodAPK.git
+git clone https://github.com/Nabeel-Farooq/DemodAPK
 cd DemodAPK
 # Run git fetch and git pull for latest change.
 pip install .
