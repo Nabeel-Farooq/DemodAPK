@@ -1,113 +1,152 @@
 """
 JSON Schema configuration module.
 
-This module provides functionality for managing JSON schema configuration:
-- Schema selection and application
-- Config file creation and updates
-- Remote schema fetching
+Features:
+- Interactive schema selection
+- Safe config.json creation/update
+- Local + remote schema support
 """
 
+from __future__ import annotations
+
 import json
-import os
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
 import inquirer
 
 import demodapk
 from demodapk.utils import msg
 
-# Schema configuration constants
-SCHEMA_PATH = os.path.join(os.path.dirname(demodapk.__file__), "schema.json")
+
+# =========================================================
+# Paths & Constants
+# =========================================================
+
+SCHEMA_PATH = Path(demodapk.__file__).resolve().parent / "schema.json"
+
 SCHEMA_URL = (
-    "https://raw.githubusercontent.com/Veha0001/DemodAPK/refs/heads/main/demodapk/schema.json"
+    "https://raw.githubusercontent.com/Veha0001/DemodAPK/"
+    "refs/heads/main/demodapk/schema.json"
 )
+
 SCHEMA_NETLIFY = "https://demodapk.netlify.app/schema.json"
-CONFIG_FILE = "config.json"
+
+CONFIG_FILE = Path("config.json")
+
+
+SchemaSource = Literal["project", "netlify", "githubusercontent"]
+
+
+SCHEMA_MAP: dict[SchemaSource, str] = {
+    "project": str(SCHEMA_PATH),
+    "netlify": SCHEMA_NETLIFY,
+    "githubusercontent": SCHEMA_URL,
+}
+
+
+# =========================================================
+# Models
+# =========================================================
+
+@dataclass(slots=True)
+class Config:
+    data: dict
+
+    def set_schema(self, schema: str) -> None:
+        self.data["$schema"] = schema
+
+
+# =========================================================
+# Config Handling
+# =========================================================
+
+def load_config(path: Path) -> Config:
+    """
+    Load config safely. If invalid JSON, returns empty config.
+    """
+    if not path.exists():
+        return Config(data={})
+
+    try:
+        return Config(data=json.loads(path.read_text(encoding="utf-8")))
+    except json.JSONDecodeError:
+        msg.warning("Invalid config.json detected. Recreating it.")
+        return Config(data={})
+
+
+def save_config(path: Path, config: Config) -> None:
+    """
+    Save config safely to disk.
+    """
+    try:
+        path.write_text(
+            json.dumps(config.data, indent=4),
+            encoding="utf-8",
+        )
+    except (OSError, TypeError) as e:
+        raise RuntimeError(f"Failed to write config: {e}") from e
 
 
 def ensure_config(schema_value: str) -> None:
     """
-    Open or create config.json and set $schema at the top.
-
-    Reads existing config file if present, otherwise creates new one.
-    Places schema reference at the start of the JSON configuration.
-
-    Args:
-        schema_value (str): URL or path to JSON schema
-
-    Returns:
-        None
-
-    Raises:
-        IOError: If unable to write config file
-        JSONDecodeError: If existing config contains invalid JSON
+    Ensure config.json exists and contains schema reference.
     """
-    config = {}
+    config = load_config(CONFIG_FILE)
+    config.set_schema(schema_value)
+    save_config(CONFIG_FILE, config)
 
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            try:
-                config = json.load(f)
-            except json.JSONDecodeError:
-                msg.error("config.json exists but is invalid JSON. Rewriting it.")
-
-    # Insert $schema at the top by creating a new dict
-    new_config = {"$schema": schema_value}
-    for k, v in config.items():
-        if k != "$schema":  # Avoid duplicates
-            new_config[k] = v
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(new_config, f, indent=4)
-    except (PermissionError, json.JSONDecodeError, TypeError, OSError) as e:
-        msg.error(f"Error: {type(e).__name__}: {e}", style="bold red")
-    msg.success("Add selected [blue]$schema[/blue] to: [u]config.json[/u]")
-    sys.exit(0)
+    msg.success("Schema added successfully to config.json")
 
 
-def get_schema() -> None:
+# =========================================================
+# Schema Selection
+# =========================================================
+
+def select_schema() -> SchemaSource | None:
     """
-    Interactive schema selection and configuration.
-
-    Prompts user to select schema source and updates config file.
-    Options include:
-    - Local package schema
-    - Netlify hosted schema
-    - GitHub hosted schema
-
-    Returns:
-        None
-
-    Raises:
-        SystemExit: After schema selection and config update
+    Prompt user to select schema source.
     """
-    questions = [
+    question = [
         inquirer.List(
-            "schema_index",
-            message="Select a way of JSON Schema",
-            choices=["project", "netlify", "githubusercontent"],
+            "schema",
+            message="Select JSON Schema source",
+            choices=list(SCHEMA_MAP.keys()),
             default="netlify",
         )
     ]
 
-    ans = inquirer.prompt(questions)
-    choice = ans.get("schema_index") if ans else None
-    if choice == "project":
-        schema_link = SCHEMA_PATH
-    elif choice == "githubusercontent":
-        schema_link = SCHEMA_URL
-    else:
-        schema_link = SCHEMA_NETLIFY
-    if choice:
-        msg.info(
-            f"Selected: [u white][link={schema_link}]{choice}[/link][/u white]",
-        )
-    else:
+    answer = inquirer.prompt(question)
+    if not answer:
+        return None
+
+    return answer.get("schema")
+
+
+def get_schema() -> None:
+    """
+    CLI entrypoint for schema selection.
+    """
+    choice = select_schema()
+
+    if not choice:
         msg.error("No selection made")
         sys.exit(1)
 
-    return ensure_config(schema_link)
+    schema_link = SCHEMA_MAP[choice]
 
+    msg.info(f"Selected: {choice} → {schema_link}")
+
+    ensure_config(schema_link)
+
+    sys.exit(0)
+
+
+# =========================================================
+# CLI
+# =========================================================
 
 if __name__ == "__main__":
     get_schema()
