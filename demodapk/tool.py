@@ -1,31 +1,32 @@
 """
 APK tool utilities module.
 
-This module provides functionality for:
-- Downloading files with progress tracking
-- Managing APKEditor downloads
-- Handling GitHub releases
-- Progress bar visualization
-
-Based on: https://github.com/textualize/rich/blob/master/examples/downloader.py
+Provides:
+- Safe concurrent file downloads
+- Progress tracking with Rich
+- GitHub release fetching
+- SHA256 verification
+- APKEditor downloader
 """
+
+from __future__ import annotations
 
 import json
 import os
-import signal
-import sys
 import hashlib
 import re
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
+import signal
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Event
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from rich.align import Align
 from rich.panel import Panel
-from rich.progress import (  # TextColumn,
+from rich.progress import (
     Progress,
     BarColumn,
     DownloadColumn,
@@ -36,7 +37,45 @@ from rich.progress import (  # TextColumn,
 
 from demodapk.utils import console
 
-# === Rich progress setup ===
+
+# =========================
+# Exceptions
+# =========================
+
+class DownloadError(Exception):
+    pass
+
+
+class ChecksumError(Exception):
+    pass
+
+
+class ReleaseFetchError(Exception):
+    pass
+
+
+# =========================
+# Models
+# =========================
+
+@dataclass(slots=True)
+class ReleaseInfo:
+    version: str
+    url: str
+    sha256: str | None = None
+
+
+@dataclass(slots=True)
+class DownloadResult:
+    url: str
+    path: Path
+    size: int
+
+
+# =========================
+# Progress setup
+# =========================
+
 progress = Progress(
     DownloadColumn(),
     "•",
@@ -52,161 +91,190 @@ progress = Progress(
 done_event = Event()
 
 
-def handle_sigint(*_):
-    """Handle SIGINT (Ctrl+C) signal to stop downloads gracefully."""
+def handle_sigint(*_) -> None:
     done_event.set()
 
 
 signal.signal(signal.SIGINT, handle_sigint)
 
 
-# === File download function ===
-def copy_url(task_id: TaskID, url: str, path: str) -> None:
-    """
-    Copy data from a URL to a local file with progress tracking.
+# =========================
+# Helpers
+# =========================
 
-    Args:
-        task_id (TaskID): Progress bar task identifier
-        url (str): Source URL to download from
-        path (str): Destination file path
-
-    Returns:
-        None
-
-    Raises:
-        URLError: If URL cannot be accessed
-        HTTPError: If HTTP request fails
-        OSError: If file cannot be written
-    """
-    progress.console.log(f"Requesting: {url}")
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urlopen(req) as response:
-        # Break if content length is missing
-        total = response.info().get("Content-Length")
-        total = int(total) if total is not None else 0
-
-        progress.update(task_id, total=total)
-        with open(path, "wb") as dest_file:
-            progress.start_task(task_id)
-            for data in iter(partial(response.read, 32768), b""):
-                dest_file.write(data)
-                progress.update(task_id, advance=len(data))
-                if done_event.is_set():
-                    return
-    progress.console.log(f"Downloaded: '{path}'")
+def _filename_from_url(url: str) -> str:
+    return Path(urlparse(url).path).name or "download.bin"
 
 
-def download(urls: list[str], dest_dir: Path) -> None:
-    """
-    Download multiple files to the specified directory.
-
-    Downloads files in parallel using a thread pool and displays
-    progress for each download.
-
-    Args:
-        urls (list[str]): List of URLs to download
-        dest_dir (str, optional): Destination directory. Defaults to current directory.
-
-    Returns:
-        None
-
-    Raises:
-        OSError: If destination directory cannot be created
-    """
-    os.makedirs(dest_dir, exist_ok=True)
-    with progress:
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for url in urls:
-                filename = url.split("/")[-1]
-                dest_path = os.path.join(dest_dir, filename)
-                task_id = progress.add_task("download", filename=filename, start=False)
-                pool.submit(copy_url, task_id, url, dest_path)
-
-
-def get_file_sha256(path: str) -> str | None:
-    """Calculate SHA256 hash of a file."""
-    if not os.path.exists(path):
-        return None
-    sha256 = hashlib.sha256()
+def get_file_sha256(path: Path) -> str:
+    sha = hashlib.sha256()
     with open(path, "rb") as f:
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256.update(byte_block)
-    return sha256.hexdigest()
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
 
 
-def get_latest_apkeditor_info() -> dict | None:
+# =========================
+# Core download
+# =========================
+
+def download_file(
+    task_id: TaskID,
+    url: str,
+    dest: Path,
+    *,
+    timeout: int = 30,
+) -> DownloadResult:
     """
-    Get the latest version of APKEditor from GitHub API.
-
-    Queries the GitHub releases API to get the most recent version tag,
-    download URL, and SHA256 checksum.
-
-    Returns:
-        dict | None: Dictionary with 'version', 'url', 'sha256', or None on failure.
+    Download a single file safely (atomic write).
     """
-    url = "https://api.github.com/repos/reandroid/apkeditor/releases/latest"
-    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+
+    tmp = dest.with_suffix(".part")
+
     try:
-        with urlopen(req) as resp:
-            data = json.load(resp)
-            tag_name = data.get("tag_name")
-            if not tag_name:
-                return None
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
-            version = tag_name.lstrip("Vv")
-            result = {"version": version, "sha256": None, "url": None}
+        with urlopen(req, timeout=timeout) as response:
+            total = response.headers.get("Content-Length")
+            total = int(total) if total else 0
 
-            # Find asset download URL and digest
-            assets = data.get("assets", [])
-            jar_filename = f"APKEditor-{version}.jar"
-            for asset in assets:
-                if asset.get("name") == jar_filename:
-                    result["url"] = asset.get("browser_download_url")
-                    digest = asset.get("digest")
-                    if digest and digest.startswith("sha256:"):
-                        result["sha256"] = digest.split(":")[1]
-                    break
+            progress.update(task_id, total=total)
+            progress.start_task(task_id)
 
-            # Fallback: Try to find sha256 in release body
-            if not result.get("sha256"):
-                body = data.get("body")
-                if body:
-                    # Look for something like `SHA256: <hash>` or just a 64-char hex string
-                    match = re.search(r"([a-fA-F0-9]{64})", body)
-                    if match:
-                        result["sha256"] = match.group(1)
+            with open(tmp, "wb") as f:
+                while True:
+                    if done_event.is_set():
+                        raise DownloadError("Download cancelled")
 
-            return result
+                    chunk = response.read(1024 * 64)
+                    if not chunk:
+                        break
+
+                    f.write(chunk)
+                    progress.update(task_id, advance=len(chunk))
+
+        tmp.replace(dest)
+
+        return DownloadResult(
+            url=url,
+            path=dest,
+            size=dest.stat().st_size,
+        )
 
     except (URLError, HTTPError) as e:
-        progress.console.log(e)
-        sys.exit(1)
+        raise DownloadError(str(e)) from e
 
 
-def download_apkeditor(dest_path: Path) -> None:
-    """
-    Download the latest version of APKEditor.
+# =========================
+# Batch download
+# =========================
 
-    Gets the latest version number and downloads the corresponding JAR file.
-    Shows download progress using rich progress bars.
+def download(
+    urls: list[str],
+    dest_dir: Path,
+    *,
+    workers: int = 4,
+) -> list[DownloadResult]:
 
-    Args:
-        dest_path (str): Directory to save the APKEditor JAR
+    dest_dir.mkdir(parents=True, exist_ok=True)
 
-    Returns:
-        None
+    results: list[DownloadResult] = []
 
-    Raises:
-        SystemExit: If version cannot be determined or download fails
-    """
-    apkeditor_info = get_latest_apkeditor_info()
-    if apkeditor_info and apkeditor_info["version"] and apkeditor_info["url"]:
-        latest_version = apkeditor_info["version"]
-        progress.console.print(
-            Panel(Align.center(f"APKEditor V{latest_version}"), expand=True),
+    with progress:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = []
+
+            for url in urls:
+                filename = _filename_from_url(url)
+                path = dest_dir / filename
+
+                task = progress.add_task("download", filename=filename, start=False)
+
+                futures.append(
+                    pool.submit(download_file, task, url, path)
+                )
+
+            for f in as_completed(futures):
+                results.append(f.result())
+
+    return results
+
+
+# =========================
+# GitHub release
+# =========================
+
+def get_latest_apkeditor_info() -> ReleaseInfo | None:
+    url = "https://api.github.com/repos/reandroid/apkeditor/releases/latest"
+
+    try:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+
+        with urlopen(req, timeout=30) as resp:
+            data = json.load(resp)
+
+        tag = data.get("tag_name")
+        if not tag:
+            return None
+
+        version = tag.lstrip("Vv")
+
+        release = ReleaseInfo(version=version, url="")
+
+        assets = data.get("assets", [])
+        jar = f"APKEditor-{version}.jar"
+
+        for asset in assets:
+            if asset.get("name") == jar:
+                release.url = asset.get("browser_download_url", "")
+                digest = asset.get("digest")
+
+                if digest and digest.startswith("sha256:"):
+                    release.sha256 = digest.split(":")[1]
+
+                break
+
+        if not release.sha256:
+            body = data.get("body", "")
+            match = re.search(r"([a-fA-F0-9]{64})", body)
+            if match:
+                release.sha256 = match.group(1)
+
+        if not release.url:
+            return None
+
+        return release
+
+    except (URLError, HTTPError) as e:
+        raise ReleaseFetchError(str(e)) from e
+
+
+# =========================
+# APKEditor download
+# =========================
+
+def download_apkeditor(dest_dir: Path) -> DownloadResult | None:
+
+    release = get_latest_apkeditor_info()
+    if not release:
+        raise ReleaseFetchError("Unable to fetch release info")
+
+    console.print(
+        Panel(
+            Align.center(f"APKEditor v{release.version}"),
             style="bold cyan",
         )
-        jar_url = apkeditor_info["url"]
-        download([jar_url], dest_path)
-    else:
-        progress.console.log("Could not determine the latest version or download URL.")
+    )
+
+    results = download([release.url], dest_dir)
+    result = results[0]
+
+    if release.sha256:
+        actual = get_file_sha256(result.path)
+
+        if actual != release.sha256:
+            raise ChecksumError(
+                f"Checksum mismatch:\nexpected={release.sha256}\nactual={actual}"
+            )
+
+    return result
