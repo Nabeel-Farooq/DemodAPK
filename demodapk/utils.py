@@ -1,18 +1,20 @@
 """
-Utility functions for DemodAPK.
+Utility helpers for DemodAPK.
 
-This module provides utility functions and classes for:
-- Logging configuration with rich formatting
-- Command execution with progress tracking
-- Message printing with colored output
-- Logo display with gradient effects
+Features:
+- Rich terminal output
+- Gradient ASCII logos
+- Shell command execution
+- Package table rendering
 """
+
+from __future__ import annotations
 
 import os
 import subprocess
-import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Iterable
 
 from art import text2art
 from rich import box
@@ -23,185 +25,240 @@ from rich.traceback import install
 from rich_gradient import Gradient
 from rich_color_ext.patch import uninstall as restore_rich_colors
 
-restore_rich_colors()
+# ---------------------------------------------------------------------------
+# Rich setup
+# ---------------------------------------------------------------------------
 
+restore_rich_colors()
 install(show_locals=True)
+
 console = Console(log_path=False)
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
 
 CONFIG_PATH = Path.home() / ".config" / "demodapk"
 LIBEXEC_PATH = Path.home() / ".local" / "libexec" / "demodapk"
-LIBEXEC_PATH.mkdir(parents=True, exist_ok=True)
-CONFIG_PATH.mkdir(parents=True, exist_ok=True)
+
+for path in (CONFIG_PATH, LIBEXEC_PATH):
+    path.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class Command:
+    """Command execution definition."""
+
+    run: str
+    title: str = ""
+    quiet: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# Logo
+# ---------------------------------------------------------------------------
 
 
 def show_logo(
-    text: Any,
+    text: str,
+    *,
     font: str = "small",
-    style: tuple[str, bool] | bool = ("bold", True),
-    fits: tuple[bool, int] | bool = (True, 1),
+    gradient: bool = True,
+    style: str = "bold",
     panel: bool = True,
+    padding_lines: int = 1,
 ) -> None:
     """
-    Display ASCII art logo with gradient coloring.
+    Render an ASCII-art logo.
 
     Args:
-        text (str): Text to convert to ASCII art
-        font (str, optional): ASCII art font name. Defaults to "small".
-        style (str, bool): Text style. Defaults to "bold". Gradient colors.
-        fits (bool, int): Panel fit, Number of blank lines after logo. Defaults to 1.
-        panel (bool): Print inside a rich panel.
-    Returns:
-        None
+        text: Logo text.
+        font: pyfiglet/art font.
+        gradient: Enable rainbow gradient.
+        style: Rich style.
+        panel: Wrap output in a panel.
+        padding_lines: Blank lines after logo.
     """
-    if isinstance(style, bool):
-        style = ("bold", style)
-    if isinstance(fits, bool):
-        fits = (fits, 1)
-    logo_art = text2art(text, font=font)
-    if isinstance(logo_art, str):
-        lines: Any = str(logo_art).splitlines()
-        if panel:
-            if fits[0]:
-                lines = Panel.fit("\n".join(lines))
-            else:
-                lines = Panel("\n".join(lines))
 
-        lolcat = Gradient(lines, console=console) if style[1] else lines
-        console.print(lolcat, style=style[0], soft_wrap=True)
-        console.line(fits[1])
+    logo = text2art(text, font=font)
+
+    renderable = (
+        Panel.fit(logo, border_style="cyan")
+        if panel
+        else logo
+    )
+
+    if gradient:
+        renderable = Gradient(renderable, console=console)
+
+    console.print(renderable, style=style)
+    console.line(padding_lines)
 
 
-class CLIprinter:
-    """RICH Style, Text Printer"""
+# ---------------------------------------------------------------------------
+# Terminal Messages
+# ---------------------------------------------------------------------------
 
-    def __call__(self) -> None:
-        """Caller pass nothing"""
+
+class CLIPrinter:
+    """Rich terminal message helper."""
+
+    LEVELS = {
+        "info": ("!", "bold cyan"),
+        "error": ("✖", "bold red"),
+        "warning": ("⚠", "bold yellow"),
+        "progress": ("➜", "bold magenta"),
+        "success": ("✓", "bold green"),
+    }
 
     def print(
         self,
-        value: str | Any = "",
-        style: Optional[str] = "bold",
-        prefix: Optional[str] = "?",
-    ):
-        """Print using rich console"""
-        fix = f"\\[[{style}]{prefix}[reset]] "
+        message: object,
+        *,
+        style: str = "bold",
+        prefix: str = "?",
+    ) -> None:
         console.print(
-            f"{fix}[{style}]{value}",
+            f"[{style}]{prefix}[/] {message}",
             markup=True,
-            highlight=True,
             soft_wrap=True,
         )
 
-    def info(self, value: Any, style: str = "bold cyan", prefix: str = "!"):
-        """Level Info"""
-        self.print(value=value, style=style, prefix=prefix)
+    def _emit(self, level: str, message: object) -> None:
+        prefix, style = self.LEVELS[level]
+        self.print(message, style=style, prefix=prefix)
 
-    def error(self, value: Any, style: str = "bold red", prefix: str = "x"):
-        """Level Error"""
-        self.print(value=value, style=style, prefix=prefix)
+    def info(self, message: object) -> None:
+        self._emit("info", message)
 
-    def warning(self, value: Any, style: str = "bold yellow", prefix: str = "~"):
-        """Level Warning"""
-        self.print(value=value, style=style, prefix=prefix)
+    def error(self, message: object) -> None:
+        self._emit("error", message)
 
-    def progress(self, value: Any, style: str = "bold magenta", prefix: str = "$"):
-        """Level Progress"""
-        self.print(value=value, style=style, prefix=prefix)
+    def warning(self, message: object) -> None:
+        self._emit("warning", message)
 
-    def success(self, value: Any, style: str = "bold green", prefix: str = "*"):
-        """Level Success"""
-        self.print(value=value, style=style, prefix=prefix)
+    def progress(self, message: object) -> None:
+        self._emit("progress", message)
 
-    # Aliases
+    def success(self, message: object) -> None:
+        self._emit("success", message)
+
+    # aliases
     warn = warning
     done = success
     prog = progress
 
 
-msg = CLIprinter()
+msg = CLIPrinter()
+
+# ---------------------------------------------------------------------------
+# Command Execution
+# ---------------------------------------------------------------------------
 
 
-def run_commands(commands: list, quietly: bool, tasker: bool = False) -> None:
+class CommandExecutionError(RuntimeError):
+    """Raised when a command fails."""
+
+
+def run_command(
+    command: str,
+    *,
+    quiet: bool = False,
+    title: str = "",
+) -> None:
     """
-    Run shell commands with support for conditional execution and progress tracking.
-
-    Can handle both simple command strings and command dictionaries with
-    additional options like titles and quiet mode overrides.
-
-    Args:
-        commands (list): List of command strings or command dictionaries
-        quietly (bool): Run all commands quietly unless overridden per command
-        tasker (bool, optional): Disable progress messages if True. Defaults to False.
-
-    Returns:
-        None
+    Execute a shell command.
 
     Raises:
-        SystemExit: If command execution fails or is interrupted
+        CommandExecutionError
     """
 
-    def run(cmd, quiet_mode, title: str = ""):
-        try:
-            if quiet_mode:
-                if not tasker and title:
-                    msg.progress(title)
-                subprocess.run(
-                    cmd,
-                    shell=True,
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=os.environ,
-                )
-            else:
-                subprocess.run(cmd, shell=True, check=True, env=os.environ)
-        except subprocess.CalledProcessError as e:
-            if e.returncode == 130:
-                msg.warning("Execution cancelled by user (Ctrl+C).")
-                sys.exit(2)
-            else:
-                msg.error(e)
-                sys.exit(1)
-        except KeyboardInterrupt:
-            msg.warning("Execution cancelled by user.")
-            sys.exit(2)  # Custom exit code for cancellation
+    if quiet and title:
+        msg.progress(title)
 
-    if isinstance(commands, list):
-        for command in commands:
-            if isinstance(command, str):
-                run(command, quietly)
-            elif isinstance(command, dict):
-                cmd = command.get("run")
-                title = command.get("title", "")
-                quiet = command.get("quiet", quietly)
-                if cmd:
-                    run(cmd, quiet, title)
+    kwargs = {
+        "shell": True,
+        "check": True,
+        "env": os.environ.copy(),
+    }
+
+    if quiet:
+        kwargs.update(
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    try:
+        subprocess.run(command, **kwargs)
+
+    except KeyboardInterrupt as exc:
+        raise CommandExecutionError(
+            "Execution cancelled by user."
+        ) from exc
+
+    except subprocess.CalledProcessError as exc:
+        raise CommandExecutionError(
+            f"Command failed ({exc.returncode}): {command}"
+        ) from exc
 
 
-def showbox_packages(available_packages, selected_idx=None):
-    """Print table of Packages in rich styling"""
-    table = Table(title="Available Packages", box=box.ROUNDED, show_lines=True)
-    table.add_column("Index", style="cyan", justify="right")
-    table.add_column("Package Name", style="magenta")
+def run_commands(
+    commands: Iterable[str | Command],
+    *,
+    quiet: bool = False,
+    tasker: bool = False,
+) -> None:
+    """
+    Execute multiple commands.
+    """
 
-    for i, name in enumerate(available_packages):
-        if i == selected_idx:
-            table.add_row(str(i), f"[bold green]{name}[/bold green]")
-        else:
-            table.add_row(str(i), name)
+    for item in commands:
+
+        if isinstance(item, str):
+            run_command(item, quiet=quiet)
+
+        elif isinstance(item, Command):
+
+            run_command(
+                item.run,
+                quiet=item.quiet
+                if item.quiet is not None
+                else quiet,
+                title="" if tasker else item.title,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Tables
+# ---------------------------------------------------------------------------
+
+
+def show_packages(
+    packages: list[str],
+    selected_index: int | None = None,
+) -> None:
+    """
+    Display package list.
+    """
+
+    table = Table(
+        title="Available Packages",
+        box=box.ROUNDED,
+        show_lines=True,
+    )
+
+    table.add_column("Index", justify="right", style="cyan")
+    table.add_column("Package", style="magenta")
+
+    for index, package in enumerate(packages):
+
+        if index == selected_index:
+            package = f"[bold green]{package}[/]"
+
+        table.add_row(str(index), package)
 
     console.print(table)
-
-
-if __name__ == "__main__":
-    show_logo("Echo")
-    try:
-        msg.progress("The World!")
-        subprocess.run("exit 2", shell=True, check=True)
-    except subprocess.CalledProcessError as e:
-        msg.error(e)
-    msg.info("Hello World")
-    msg.error("Something wrong")
-    msg.warning("He is here!")
-    msg.success("Everything gonna be alright.")
-    msg.print("I am Grok", style="b u", prefix="∅")
