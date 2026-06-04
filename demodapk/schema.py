@@ -4,16 +4,16 @@ JSON Schema configuration module.
 Features:
 - Interactive schema selection
 - Safe config.json creation/update
-- Local + remote schema support
+- Local and remote schema support
 """
 
 from __future__ import annotations
 
 import json
-import sys
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any
 
 import inquirer
 
@@ -34,16 +34,30 @@ SCHEMA_URL = (
 
 SCHEMA_NETLIFY = "https://demodapk.netlify.app/schema.json"
 
-CONFIG_FILE = Path("config.json")
+DEFAULT_CONFIG_FILE = Path("config.json")
 
 
-SchemaSource = Literal["project", "netlify", "githubusercontent"]
+# =========================================================
+# Schema Sources
+# =========================================================
+
+
+class SchemaSource(StrEnum):
+    PROJECT = "project"
+    NETLIFY = "netlify"
+    GITHUB = "githubusercontent"
 
 
 SCHEMA_MAP: dict[SchemaSource, str] = {
-    "project": str(SCHEMA_PATH),
-    "netlify": SCHEMA_NETLIFY,
-    "githubusercontent": SCHEMA_URL,
+    SchemaSource.PROJECT: str(SCHEMA_PATH),
+    SchemaSource.NETLIFY: SCHEMA_NETLIFY,
+    SchemaSource.GITHUB: SCHEMA_URL,
+}
+
+SCHEMA_CHOICES: dict[str, SchemaSource] = {
+    "Local Project Schema": SchemaSource.PROJECT,
+    "Netlify (Recommended)": SchemaSource.NETLIFY,
+    "GitHub Raw": SchemaSource.GITHUB,
 }
 
 
@@ -51,102 +65,133 @@ SCHEMA_MAP: dict[SchemaSource, str] = {
 # Models
 # =========================================================
 
+
 @dataclass(slots=True)
 class Config:
-    data: dict
+    data: dict[str, Any]
 
     def set_schema(self, schema: str) -> None:
         self.data["$schema"] = schema
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.data,
+            indent=4,
+            ensure_ascii=False,
+        )
 
 
 # =========================================================
 # Config Handling
 # =========================================================
 
+
 def load_config(path: Path) -> Config:
     """
-    Load config safely. If invalid JSON, returns empty config.
+    Load config safely.
+
+    Returns an empty config if:
+    - file does not exist
+    - JSON is invalid
+    - root object is not a dictionary
     """
     if not path.exists():
-        return Config(data={})
+        return Config({})
 
     try:
-        return Config(data=json.loads(path.read_text(encoding="utf-8")))
-    except json.JSONDecodeError:
+        data = json.loads(path.read_text(encoding="utf-8"))
+
+        if not isinstance(data, dict):
+            raise ValueError("Config root must be a JSON object")
+
+        return Config(data)
+
+    except (json.JSONDecodeError, ValueError):
         msg.warning("Invalid config.json detected. Recreating it.")
-        return Config(data={})
+        return Config({})
 
 
 def save_config(path: Path, config: Config) -> None:
     """
-    Save config safely to disk.
+    Save config to disk.
     """
     try:
         path.write_text(
-            json.dumps(config.data, indent=4),
+            config.to_json(),
             encoding="utf-8",
         )
-    except (OSError, TypeError) as e:
-        raise RuntimeError(f"Failed to write config: {e}") from e
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to write config file: {path}"
+        ) from exc
 
 
-def ensure_config(schema_value: str) -> None:
+def ensure_config(
+    schema_value: str,
+    config_path: Path = DEFAULT_CONFIG_FILE,
+) -> None:
     """
-    Ensure config.json exists and contains schema reference.
+    Ensure config exists and contains the selected schema.
     """
-    config = load_config(CONFIG_FILE)
+    config = load_config(config_path)
     config.set_schema(schema_value)
-    save_config(CONFIG_FILE, config)
 
-    msg.success("Schema added successfully to config.json")
+    save_config(config_path, config)
+
+    msg.success(f"Schema added successfully to {config_path}")
 
 
 # =========================================================
 # Schema Selection
 # =========================================================
 
+
 def select_schema() -> SchemaSource | None:
     """
-    Prompt user to select schema source.
+    Prompt the user to select a schema source.
     """
-    question = [
+    questions = [
         inquirer.List(
             "schema",
             message="Select JSON Schema source",
-            choices=list(SCHEMA_MAP.keys()),
-            default="netlify",
+            choices=list(SCHEMA_CHOICES.keys()),
+            default="Netlify (Recommended)",
         )
     ]
 
-    answer = inquirer.prompt(question)
-    if not answer:
+    answer = inquirer.prompt(questions) or {}
+
+    selected = answer.get("schema")
+    if selected is None:
         return None
 
-    return answer.get("schema")
-
-
-def get_schema() -> None:
-    """
-    CLI entrypoint for schema selection.
-    """
-    choice = select_schema()
-
-    if not choice:
-        msg.error("No selection made")
-        sys.exit(1)
-
-    schema_link = SCHEMA_MAP[choice]
-
-    msg.info(f"Selected: {choice} → {schema_link}")
-
-    ensure_config(schema_link)
-
-    sys.exit(0)
+    return SCHEMA_CHOICES[selected]
 
 
 # =========================================================
 # CLI
 # =========================================================
 
+
+def main() -> int:
+    """
+    CLI entrypoint.
+    """
+    schema_source = select_schema()
+
+    if schema_source is None:
+        msg.error("No schema source selected.")
+        return 1
+
+    schema_link = SCHEMA_MAP[schema_source]
+
+    msg.info(f"Selected: {schema_source.value}")
+    msg.info(f"Schema: {schema_link}")
+
+    ensure_config(schema_link)
+
+    return 0
+
+
 if __name__ == "__main__":
-    get_schema()
+    raise SystemExit(main())
