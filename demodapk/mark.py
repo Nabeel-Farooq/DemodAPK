@@ -1,58 +1,81 @@
 """
 APK modification utilities using APKEditor.
 
-This module provides functions for managing and executing APKEditor operations
-including updating, decoding, building and merging APK files.
+This module provides functions for managing and executing APKEditor operations,
+including updating, decoding, building, and merging APK files.
 """
+
+from __future__ import annotations
 
 import os
 import re
 import shutil
 import sys
 from contextlib import nullcontext
-from os.path import abspath, basename, relpath
+from pathlib import Path
 
 from rich.panel import Panel
 
 from demodapk.baseconf import Apkeditor
-from demodapk.tool import download_apkeditor, get_file_sha256, get_latest_apkeditor_info
-from demodapk.utils import LIBEXEC_PATH, console, msg, run_commands
+from demodapk.tool import (
+    download_apkeditor,
+    get_file_sha256,
+    get_latest_apkeditor_info,
+)
+from demodapk.utils import (
+    LIBEXEC_PATH,
+    console,
+    msg,
+    run_commands,
+)
+
+APKEDITOR_PATTERN = re.compile(r"APKEditor-(.+?)\.jar$")
 
 
-def update_apkeditor():
+def update_apkeditor() -> str | None:
     """
-    Ensure the latest APKEditor jar is present in the user config folder.
-    Deletes older versions and downloads the latest if needed.
-    Returns the path to the latest jar.
+    Ensure the latest APKEditor JAR is installed.
+
+    Returns:
+        Path to latest APKEditor JAR or None on failure.
     """
     apkeditor_info = get_latest_apkeditor_info()
+
     if not apkeditor_info or not apkeditor_info.get("version"):
-        msg.error("Could not get latest APKEditor version info.")
+        msg.error("Could not get latest APKEditor version information.")
         return None
 
     latest_version = apkeditor_info["version"]
     latest_jar_name = f"APKEditor-{latest_version}.jar"
-    latest_jar_path = os.path.join(LIBEXEC_PATH, latest_jar_name)
+    latest_jar_path = Path(LIBEXEC_PATH) / latest_jar_name
     remote_sha = apkeditor_info.get("sha256")
 
-    # Clean up old versions
-    for fname in os.listdir(LIBEXEC_PATH):
-        if re.match(r"APKEditor-(.+?)\.jar$", fname) and fname != latest_jar_name:
-            path = os.path.join(LIBEXEC_PATH, fname)
-            try:
-                os.remove(path)
-                console.print(
-                    Panel(f"{fname}", title="Deleted old version"),
-                    justify="left",
-                    style="bold yellow",
-                )
-            except (PermissionError, shutil.Error):
-                pass
+    libexec = Path(LIBEXEC_PATH)
+    libexec.mkdir(parents=True, exist_ok=True)
 
-    # Check if latest version already exists and is valid
-    if os.path.exists(latest_jar_path):
+    # Remove old versions
+    for jar in libexec.glob("APKEditor-*.jar"):
+        if jar.name == latest_jar_name:
+            continue
+
+        try:
+            jar.unlink()
+            console.print(
+                Panel(
+                    jar.name,
+                    title="Deleted old version",
+                ),
+                justify="left",
+                style="bold yellow",
+            )
+        except OSError:
+            pass
+
+    # Existing jar validation
+    if latest_jar_path.exists():
         if remote_sha:
-            local_sha = get_file_sha256(latest_jar_path)
+            local_sha = get_file_sha256(str(latest_jar_path))
+
             if local_sha == remote_sha:
                 console.print(
                     Panel.fit(
@@ -60,76 +83,117 @@ def update_apkeditor():
                         border_style="bold green",
                     )
                 )
-                return latest_jar_path
+                return str(latest_jar_path)
 
-            console.print("Local APKEditor JAR has incorrect hash. Redownloading.", style="yellow")
-        else:
-            # No remote hash, just assume it's fine if it exists and is not empty
-            if os.path.getsize(latest_jar_path) > 0:
-                console.print(
-                    f"APKEditor v{latest_version} is up to date (no hash to verify).",
-                    style="green",
-                )
-                return latest_jar_path
+            console.print(
+                "Local APKEditor JAR hash mismatch. Redownloading...",
+                style="yellow",
+            )
 
-            console.print("Local APKEditor JAR is empty. Redownloading.", style="yellow")
+        elif latest_jar_path.stat().st_size > 0:
+            console.print(
+                f"APKEditor v{latest_version} is up to date.",
+                style="green",
+            )
+            return str(latest_jar_path)
 
-    # If we are here, we need to download
+    # Download latest
     download_apkeditor(LIBEXEC_PATH)
 
-    if os.path.exists(latest_jar_path):
-        if remote_sha:
-            local_sha = get_file_sha256(latest_jar_path)
-            if local_sha != remote_sha:
-                msg.error("Downloaded APKEditor JAR has incorrect hash. Download may be corrupt.")
-                return None
-        return latest_jar_path
+    if not latest_jar_path.exists():
+        msg.error("Failed to download APKEditor.")
+        return None
 
-    msg.error("Failed to download APKEditor.")
-    return None
+    if remote_sha:
+        local_sha = get_file_sha256(str(latest_jar_path))
+
+        if local_sha != remote_sha:
+            msg.error(
+                "Downloaded APKEditor JAR failed SHA256 verification."
+            )
+            return None
+
+    return str(latest_jar_path)
 
 
-def get_apkeditor_cmd(cfg: Apkeditor):
+def _discover_latest_jar() -> str | None:
     """
-    Return the command to run APKEditor.
-    - Use the provided jar or pick the latest jar from config.
-    - If missing, download the latest jar and prompt to rerun.
+    Find the newest APKEditor JAR in LIBEXEC_PATH.
     """
-    javaopts = cfg.javaopts
+    jars: list[tuple[tuple[int, ...], str]] = []
 
-    env_editor_jar = os.environ.get("APKEDITOR_JAR")
-    if env_editor_jar and os.path.exists(env_editor_jar):
-        editor_jar = env_editor_jar
-    else:
+    for jar in Path(LIBEXEC_PATH).glob("APKEditor-*.jar"):
+        match = APKEDITOR_PATTERN.match(jar.name)
+
+        if not match:
+            continue
+
+        version = tuple(
+            int(v)
+            for v in re.findall(r"\d+", match.group(1))
+        )
+
+        if version:
+            jars.append((version, str(jar)))
+
+    if not jars:
+        return None
+
+    jars.sort(reverse=True)
+    return jars[0][1]
+
+
+def get_apkeditor_cmd(cfg: Apkeditor) -> str:
+    """
+    Return APKEditor execution command.
+    """
+    javaopts = cfg.javaopts.strip()
+
+    editor_jar: str | None = None
+
+    env_jar = os.environ.get("APKEDITOR_JAR")
+
+    if env_jar and Path(env_jar).is_file():
+        editor_jar = env_jar
+
+    elif cfg.editor_jar:
         editor_jar = cfg.editor_jar
-        if editor_jar:
-            if not os.path.exists(editor_jar):
-                msg.error(f"Specified editor jar does not exist: {editor_jar}")
-                sys.exit(1)
-        else:
-            jars = []
-            for fname in os.listdir(LIBEXEC_PATH):
-                match = re.match(r"APKEditor-(.+?)\.jar$", fname)
-                if match:
-                    version_str = match.group(1)
-                    version_parts = tuple(map(int, re.findall(r"\d+", version_str)))
-                    if version_parts:
-                        jars.append((version_parts, os.path.join(LIBEXEC_PATH, fname)))
-            if jars:
-                jars.sort(reverse=True)
-                editor_jar = jars[0][1]
 
-    # If jar  doesn't exist, update/download latest
-    if not editor_jar or not os.path.exists(editor_jar):
-        update_apkeditor()
-        sys.exit(0)
+        if not Path(editor_jar).is_file():
+            msg.error(f"Specified APKEditor JAR not found: {editor_jar}")
+            sys.exit(1)
 
-    if os.path.getsize(editor_jar) == 0:
-        msg.error("The APKEditor JAR is faulty.")
-        update_apkeditor()
-        sys.exit(0)
+    else:
+        editor_jar = _discover_latest_jar()
 
-    return f"java {javaopts} -jar {editor_jar}".strip()
+    if not editor_jar or not Path(editor_jar).is_file():
+        msg.info("APKEditor not found. Downloading latest version...")
+        editor_jar = update_apkeditor()
+
+        if not editor_jar:
+            sys.exit(1)
+
+    if Path(editor_jar).stat().st_size == 0:
+        msg.error("APKEditor JAR is empty or corrupted.")
+        editor_jar = update_apkeditor()
+
+        if not editor_jar:
+            sys.exit(1)
+
+    return f"java {javaopts} -jar \"{editor_jar}\"".strip()
+
+
+def _status_context(quietly: bool, text: str):
+    """
+    Shared status context helper.
+    """
+    if quietly:
+        return console.status(
+            text,
+            spinner="point",
+            spinner_style="blue",
+        )
+    return nullcontext()
 
 
 def apkeditor_merge(
@@ -138,33 +202,26 @@ def apkeditor_merge(
     merge_base_apk: str,
     quietly: bool,
     force: bool = False,
-):
+) -> None:
     """
-    Merge an APK file with a base APK using APKEditor.
-
-    Args:
-        cfg (Apkeditor): APKEditor configuration object
-        apk_file (str): Path to the APK file to merge
-        merge_base_apk (str): Path to output the merged APK
-        quietly (bool): Run in quiet mode if True
-        force (bool, optional): Force overwrite existing files. Defaults to False.
-
-    Returns:
-        None
+    Merge split APKs into a single APK.
     """
-    # New base name of apk_file end with .apk
-    command = f'{get_apkeditor_cmd(cfg)} m -i "{abspath(apk_file)}" -o "{abspath(merge_base_apk)}"'
+    command = (
+        f'{get_apkeditor_cmd(cfg)} '
+        f'm -i "{Path(apk_file).resolve()}" '
+        f'-o "{Path(merge_base_apk).resolve()}"'
+    )
+
     if force:
         command += " -f"
-    msg.info(f"Merging: {basename(apk_file)}", prefix="-")
-    with (
-        console.status("[bold blue]Processing...", spinner="point", spinner_style="blue")
-        if quietly
-        else nullcontext()
-    ):
+
+    msg.info(f"Merging: {Path(apk_file).name}", prefix="-")
+
+    with _status_context(quietly, "[bold blue]Processing..."):
         run_commands([command], quietly, tasker=True)
+
     msg.success(
-        f"Merged into: {basename(merge_base_apk)}",
+        f"Merged into: {Path(merge_base_apk).name}",
         prefix="+",
     )
 
@@ -175,43 +232,48 @@ def apkeditor_decode(
     output_dir: str,
     quietly: bool,
     force: bool,
-):
+) -> None:
     """
-    Decode an APK file using APKEditor.
-
-    Args:
-        cfg (Apkeditor): APKEditor configuration object
-        apk_file (str): Path to the APK file to decode
-        output_dir (str): Directory to output decoded files
-        quietly (bool): Run in quiet mode if True
-        force (bool): Force overwrite existing files
-
-    Returns:
-        None
+    Decode an APK using APKEditor.
     """
-    output_dir = abspath(output_dir)
-    merge_base_apk = abspath(os.path.splitext(apk_file)[0] + ".apk")
-    # If apk_file is not end with .apk then merge
-    if apk_file.lower() != ".apk":
-        if not os.path.exists(merge_base_apk):
-            apkeditor_merge(cfg, apk_file, merge_base_apk, quietly)
-        command = f'{get_apkeditor_cmd(cfg)} d -i "{merge_base_apk}" -o "{output_dir}"'
-        apk_file = merge_base_apk
-    else:
-        command = f'{get_apkeditor_cmd(cfg)} d -i "{apk_file}" -o "{output_dir}"'
+    apk_path = Path(apk_file).resolve()
+    output_path = Path(output_dir).resolve()
+
+    if not apk_path.name.lower().endswith(".apk"):
+        merged_apk = apk_path.with_suffix(".apk")
+
+        if not merged_apk.exists():
+            apkeditor_merge(
+                cfg,
+                str(apk_path),
+                str(merged_apk),
+                quietly,
+            )
+
+        apk_path = merged_apk
+
+    command = (
+        f'{get_apkeditor_cmd(cfg)} '
+        f'd -i "{apk_path}" '
+        f'-o "{output_path}"'
+    )
 
     if cfg.dex_option:
         command += " -dex"
+
     if force:
         command += " -f"
+
     msg.info(
-        f"Decoding: [magenta underline]{basename(apk_file)}",
+        f"Decoding: [magenta underline]{apk_path.name}",
         prefix="-",
     )
-    with console.status("[bold green]Processing...", spinner="point") if quietly else nullcontext():
+
+    with _status_context(quietly, "[bold green]Processing..."):
         run_commands([command], quietly, tasker=True)
+
     msg.success(
-        f"Decoded into: {relpath(output_dir)}",
+        f"Decoded into: {output_path}",
         prefix="+",
     )
 
@@ -222,54 +284,65 @@ def apkeditor_build(
     output_apk: str,
     quietly: bool,
     force: bool,
-):
+) -> str:
     """
-    Build an APK from decoded files using APKEditor.
-
-    Args:
-        cfg (Apkeditor): APKEditor configuration object
-        input_dir (str): Directory containing decoded APK files
-        output_apk (str): Path to output the built APK
-        quietly (bool): Run in quiet mode if True
-        force (bool): Force overwrite existing files
-
-    Returns:
-        str: Path to the built APK file
+    Build an APK from decoded files.
     """
-    input_dir = abspath(input_dir)
-    output_apk = abspath(output_apk)
-    command = f'{get_apkeditor_cmd(cfg)} b -i "{input_dir}" -o "{output_apk}"'
+    input_path = Path(input_dir).resolve()
+    output_path = Path(output_apk).resolve()
+
+    command = (
+        f'{get_apkeditor_cmd(cfg)} '
+        f'b -i "{input_path}" '
+        f'-o "{output_path}"'
+    )
+
     if force:
         command += " -f"
-    msg.info(f"Building: {basename(input_dir)}", prefix="-")
-    with (
-        console.status("[bold green]Finishing Build...", spinner="point")
-        if quietly
-        else nullcontext()
+
+    msg.info(f"Building: {input_path.name}", prefix="-")
+
+    with _status_context(
+        quietly,
+        "[bold green]Finishing Build...",
     ):
         run_commands([command], quietly, tasker=True)
+
+    final_output = str(output_path)
+
     if cfg.clean:
-        output_apk = cleanup_apk_build(input_dir, output_apk)
+        final_output = cleanup_apk_build(
+            str(input_path),
+            str(output_path),
+        )
+
     msg.success(
-        f"Built into: {basename(output_apk)}",
+        f"Built into: {Path(final_output).name}",
         prefix="+",
     )
-    return output_apk
+
+    return final_output
 
 
-def cleanup_apk_build(input_dir: str, output_apk: str):
+def cleanup_apk_build(
+    input_dir: str,
+    output_apk: str,
+) -> str:
     """
-    Clean up temporary files after APK build.
-
-    Args:
-        input_dir (str): Directory containing decoded APK files
-        output_apk (str): Path to the built APK file
-
-    Returns:
-        str: Path to the final APK file after cleanup
+    Cleanup decoded directory after build.
     """
-    dest_file = input_dir + ".apk"
-    shutil.move(output_apk, dest_file)
-    msg.info(f"Clean: {basename(input_dir)}")
-    shutil.rmtree(input_dir, ignore_errors=True)
-    return dest_file
+    input_path = Path(input_dir)
+    output_path = Path(output_apk)
+
+    final_apk = input_path.with_suffix(".apk")
+
+    shutil.move(str(output_path), str(final_apk))
+
+    msg.info(
+        f"Clean: {input_path.name}",
+        prefix="-",
+    )
+
+    shutil.rmtree(input_path, ignore_errors=True)
+
+    return str(final_apk)
